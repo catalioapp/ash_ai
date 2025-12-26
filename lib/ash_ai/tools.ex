@@ -330,11 +330,12 @@ defmodule AshAi.Tools do
         error ->
           error = Ash.Error.to_error_class(error)
 
+          # Return structured errors, not JSON-encoded string
+          # The MCP server will handle serialization
           {:error,
            domain
            |> AshJsonApi.Error.to_json_api_errors(resource, error, action.type)
-           |> serialize_errors()
-           |> Jason.encode!()}
+           |> serialize_errors()}
       end
 
     if on_end = callbacks[:on_tool_end] do

@@ -383,14 +383,15 @@ defmodule AshAi.Mcp.Server do
 
             {:json_response, Jason.encode!(response), session_id}
 
-          {:error, error} ->
+          {:error, errors} ->
+            # errors is now a list of structured error maps (not a JSON string)
             response = %{
               "jsonrpc" => "2.0",
               "id" => id,
               "error" => %{
                 "code" => -32_000,
                 "message" => "Tool execution failed",
-                "data" => %{"error" => error}
+                "data" => %{"errors" => errors}
               }
             }
 
