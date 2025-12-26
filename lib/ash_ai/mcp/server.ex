@@ -384,15 +384,21 @@ defmodule AshAi.Mcp.Server do
             {:json_response, Jason.encode!(response), session_id}
 
           {:error, errors} ->
-            # errors is now a list of structured error maps (not a JSON string)
+            # Per MCP specification (2025-06-18), tool execution errors should be
+            # returned as successful responses with isError: true, NOT as JSON-RPC errors.
+            # This allows LLMs to see and handle the error appropriately.
+            # See: https://modelcontextprotocol.io/specification/2025-06-18/server/tools
+            error_text = format_tool_errors(errors)
+
+            result = %{
+              "isError" => true,
+              "content" => [%{"type" => "text", "text" => error_text}]
+            }
+
             response = %{
               "jsonrpc" => "2.0",
               "id" => id,
-              "error" => %{
-                "code" => -32_000,
-                "message" => "Tool execution failed",
-                "data" => %{"errors" => errors}
-              }
+              "result" => result
             }
 
             {:json_response, Jason.encode!(response), session_id}
@@ -517,11 +523,12 @@ defmodule AshAi.Mcp.Server do
       {:error, error} ->
         error = Ash.Error.to_error_class(error)
 
+        # Return structured errors, not JSON-encoded string
+        # The MCP server will handle serialization via format_tool_errors/1
         {:error,
          domain
          |> AshJsonApi.Error.to_json_api_errors(resource, error, action.type)
-         |> AshAi.Serializer.serialize_errors()
-         |> Jason.encode!()}
+         |> AshAi.Serializer.serialize_errors()}
 
       result ->
         result
@@ -585,4 +592,60 @@ defmodule AshAi.Mcp.Server do
       "error" => error
     })
   end
+
+  @doc """
+  Format tool execution errors into a human-readable text message.
+
+  Per MCP specification, tool errors are returned with isError: true and
+  the error details in the content array. This function formats the structured
+  error list into a readable string for LLM consumption.
+  """
+  def format_tool_errors(errors) when is_list(errors) do
+    formatted =
+      errors
+      |> Enum.map(&format_single_error/1)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join("\n")
+
+    if formatted == "" do
+      "Tool execution failed"
+    else
+      formatted
+    end
+  end
+
+  def format_tool_errors(_), do: "Tool execution failed"
+
+  defp format_single_error(%{} = error) do
+    # Extract field/pointer info
+    field =
+      case error do
+        %{source: %{pointer: pointer}} when is_binary(pointer) -> pointer
+        %{source: %{parameter: param}} when is_binary(param) -> param
+        %{"source" => %{"pointer" => pointer}} when is_binary(pointer) -> pointer
+        %{"source" => %{"parameter" => param}} when is_binary(param) -> param
+        _ -> nil
+      end
+
+    # Extract the error detail/message
+    detail =
+      case error do
+        %{detail: detail} when is_binary(detail) -> detail
+        %{"detail" => detail} when is_binary(detail) -> detail
+        %{title: title} when is_binary(title) -> title
+        %{"title" => title} when is_binary(title) -> title
+        %{message: message} when is_binary(message) -> message
+        %{"message" => message} when is_binary(message) -> message
+        _ -> nil
+      end
+
+    cond do
+      field && detail -> "#{field}: #{detail}"
+      detail -> detail
+      field -> "Error at #{field}"
+      true -> nil
+    end
+  end
+
+  defp format_single_error(_), do: nil
 end
