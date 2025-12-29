@@ -461,6 +461,7 @@ defmodule AshAi.Tools do
       filter: %{
         type: :object,
         description: "Filter results",
+        additionalProperties: false,
         # querying is complex, will likely need to be a two step process
         # i.e first decide to query, and then provide it with a function to call
         # that has all the options Then the filter object can be big & expressive.
