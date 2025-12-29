@@ -39,7 +39,9 @@ defmodule AshAi.Tools do
       name: name,
       description: description,
       parameters_schema: parameter_schema,
-      strict: true,
+      # strict mode is only supported by OpenAI models, not Anthropic or others
+      # Setting to false for broader compatibility
+      strict: false,
       async: async,
       function: &execute(tool, &1, &2)
     })
@@ -456,58 +458,27 @@ defmodule AshAi.Tools do
          %{type: :read, pagination: pagination},
          action_parameters
        ) do
+    filter_props =
+      Ash.Resource.Info.fields(resource, [:attributes, :aggregates, :calculations])
+      |> Enum.filter(&(&1.public? && &1.filterable?))
+      |> Map.new(fn field ->
+        {field.name, AshAi.OpenApi.raw_filter_type(field, resource)}
+      end)
+
     Map.merge(properties, %{
       filter: %{
         type: :object,
         description: "Filter results",
-        # querying is complex, will likely need to be a two step process
-        # i.e first decide to query, and then provide it with a function to call
-        # that has all the options Then the filter object can be big & expressive.
-        properties:
-          Ash.Resource.Info.fields(resource, [:attributes, :aggregates, :calculations])
-          |> Enum.filter(&(&1.public? && &1.filterable?))
-          |> Map.new(fn field ->
-            value =
-              AshAi.OpenApi.raw_filter_type(field, resource)
-
-            {field.name, value}
-          end)
+        additionalProperties: false,
+        properties: filter_props,
+        required: Map.keys(filter_props)
       },
       result_type: %{
+        type: :string,
         default: "run_query",
-        description: "The type of result to return",
-        oneOf: [
-          %{
-            description:
-              "Run the query returning all results, or return a count of results, or check if any results exist",
-            enum: [
-              "run_query",
-              "count",
-              "exists"
-            ]
-          },
-          %{
-            properties: %{
-              aggregate: %{
-                type: :string,
-                description: "The aggregate function to use",
-                enum: [:max, :min, :sum, :avg, :count]
-              },
-              field: %{
-                type: :string,
-                description: "The field to aggregate",
-                enum:
-                  Ash.Resource.Info.fields(resource, [
-                    :attributes,
-                    :aggregates,
-                    :calculations
-                  ])
-                  |> Enum.filter(& &1.public?)
-                  |> Enum.map(& &1.name)
-              }
-            }
-          }
-        ]
+        description:
+          "The type of result to return: run_query (return records), count (return count), exists (return boolean)",
+        enum: ["run_query", "count", "exists"]
       },
       limit: %{
         type: :integer,
@@ -528,30 +499,37 @@ defmodule AshAi.Tools do
       },
       sort: %{
         type: :array,
-        items: %{
-          type: :object,
-          properties:
-            %{
-              field: %{
-                type: :string,
-                description: "The field to sort by",
-                enum:
-                  Ash.Resource.Info.fields(resource, [
-                    :attributes,
-                    :calculations,
-                    :aggregates
-                  ])
-                  |> Enum.filter(&(&1.public? && &1.sortable?))
-                  |> Enum.map(& &1.name)
-              },
-              direction: %{
-                type: :string,
-                description: "The direction to sort by",
-                enum: ["asc", "desc"]
+        items:
+          (
+            sort_props =
+              %{
+                field: %{
+                  type: :string,
+                  description: "The field to sort by",
+                  enum:
+                    Ash.Resource.Info.fields(resource, [
+                      :attributes,
+                      :calculations,
+                      :aggregates
+                    ])
+                    |> Enum.filter(&(&1.public? && &1.sortable?))
+                    |> Enum.map(& &1.name)
+                },
+                direction: %{
+                  type: :string,
+                  description: "The direction to sort by",
+                  enum: ["asc", "desc"]
+                }
               }
+              |> add_input_for_fields(resource)
+
+            %{
+              type: :object,
+              properties: sort_props,
+              additionalProperties: false,
+              required: Map.keys(sort_props)
             }
-            |> add_input_for_fields(resource)
-        }
+          )
       }
     })
     |> then(fn map ->
@@ -590,42 +568,44 @@ defmodule AshAi.Tools do
         sort_obj
 
       fields ->
-        input_for_fields =
-          %{
-            type: :object,
-            additonalProperties: false,
-            properties:
-              Map.new(fields, fn field ->
-                inputs =
-                  Enum.map(field.arguments, fn argument ->
-                    value =
-                      AshAi.OpenApi.resource_write_attribute_type(
-                        argument,
-                        resource,
-                        :create
-                      )
+        input_for_fields_props =
+          Map.new(fields, fn field ->
+            inputs =
+              Enum.map(field.arguments, fn argument ->
+                value =
+                  AshAi.OpenApi.resource_write_attribute_type(
+                    argument,
+                    resource,
+                    :create
+                  )
 
-                    {argument.name, value}
-                  end)
-
-                required =
-                  Enum.flat_map(field.arguments, fn argument ->
-                    if argument.allow_nil? do
-                      []
-                    else
-                      [argument.name]
-                    end
-                  end)
-
-                {field.name,
-                 %{
-                   type: :object,
-                   properties: Map.new(inputs),
-                   required: required,
-                   additionalProperties: false
-                 }}
+                {argument.name, value}
               end)
-          }
+
+            required =
+              Enum.flat_map(field.arguments, fn argument ->
+                if argument.allow_nil? do
+                  []
+                else
+                  [argument.name]
+                end
+              end)
+
+            {field.name,
+             %{
+               type: :object,
+               properties: Map.new(inputs),
+               required: required,
+               additionalProperties: false
+             }}
+          end)
+
+        input_for_fields = %{
+          type: :object,
+          additionalProperties: false,
+          properties: input_for_fields_props,
+          required: Map.keys(input_for_fields_props)
+        }
 
         Map.put(sort_obj, :input_for_fields, input_for_fields)
     end
