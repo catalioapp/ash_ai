@@ -78,7 +78,7 @@ defmodule AshAi.OpenApi do
       |> add_null_for_non_required()
       |> make_all_required()
     else
-      %{type: :object}
+      %{type: :object, properties: %{}, additionalProperties: false, required: []}
     end
     |> with_attribute_description(attr)
   end
@@ -504,7 +504,7 @@ defmodule AshAi.OpenApi do
       |> add_null_for_non_required()
       |> make_all_required()
     else
-      %{type: :object}
+      %{type: :object, properties: %{}, additionalProperties: false, required: []}
     end
   end
 
@@ -518,6 +518,14 @@ defmodule AshAi.OpenApi do
   end
 
   defp resource_attribute_type(%{type: Ash.Type.UtcDatetime}, _resource) do
+    %{type: :string, format: :"date-time"}
+  end
+
+  defp resource_attribute_type(%{type: Ash.Type.UtcDatetimeUsec}, _resource) do
+    %{type: :string, format: :"date-time"}
+  end
+
+  defp resource_attribute_type(%{type: :utc_datetime_usec}, _resource) do
     %{type: :string, format: :"date-time"}
   end
 
@@ -654,7 +662,8 @@ defmodule AshAi.OpenApi do
         }
 
       true ->
-        %{}
+        # Fallback for any unrecognized types - treat as string for OpenAI strict mode compatibility
+        %{type: :string}
     end
   end
 
@@ -725,22 +734,10 @@ defmodule AshAi.OpenApi do
     end)
   end
 
-  defp add_number_constraints(schema, constraints) do
-    constraints
-    |> Keyword.take([:min, :max, :greater_than, :less_than])
-    |> Enum.reduce(schema, fn
-      {:min, min}, schema ->
-        Map.put(schema, :minimum, min)
-
-      {:max, max}, schema ->
-        Map.put(schema, :maximum, max)
-
-      {:greater_than, exclusive_min}, schema ->
-        Map.put(schema, :exclusiveMinimum, exclusive_min)
-
-      {:less_than, exclusive_max}, schema ->
-        Map.put(schema, :exclusiveMaximum, exclusive_max)
-    end)
+  # OpenAI strict mode doesn't support number constraints (minimum, maximum, etc.)
+  # So we just return the schema unchanged
+  defp add_number_constraints(schema, _constraints) do
+    schema
   end
 
   defp required_attributes(resource) do
@@ -873,11 +870,13 @@ defmodule AshAi.OpenApi do
     if fields == [] do
       nil
     else
+      props = Map.new(fields)
+
       %{
         type: :object,
-        properties: Map.new(fields),
-        additionalProperties: false
-        # required: required Missing?
+        properties: props,
+        additionalProperties: false,
+        required: Map.keys(props)
       }
       |> with_attribute_description(attribute_or_aggregate)
     end
