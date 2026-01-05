@@ -99,18 +99,30 @@ defmodule AshAi.Mcp.Server do
   end
 
   @doc """
-  Send an SSE event over the chunked connection
+  Send an SSE event over the chunked connection.
+
+  Handles connection errors gracefully - if the client disconnects during
+  streaming, the error is logged and the function returns early instead of
+  crashing with a MatchError.
   """
   def send_sse_event(conn, event, data, id \\ nil) do
+    require Logger
+
     chunks = [
       if(id, do: "id: #{id}\n", else: ""),
       "event: #{event}\n",
       "data: #{data}\n\n"
     ]
 
-    Enum.reduce(chunks, conn, fn chunk, conn ->
-      {:ok, conn} = Plug.Conn.chunk(conn, chunk)
-      conn
+    Enum.reduce_while(chunks, conn, fn chunk, conn ->
+      case Plug.Conn.chunk(conn, chunk) do
+        {:ok, conn} ->
+          {:cont, conn}
+
+        {:error, reason} ->
+          Logger.debug("MCP SSE connection closed: #{inspect(reason)}")
+          {:halt, conn}
+      end
     end)
   end
 
